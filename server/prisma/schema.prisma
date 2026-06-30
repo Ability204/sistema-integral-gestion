@@ -1,0 +1,217 @@
+// Esquema de la base de datos del Sistema Integral de Gestión.
+// Provider SQLite para desarrollo. Para PostgreSQL: cambia provider a "postgresql".
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// USUARIOS (empleados que operan el sistema)
+// ---------------------------------------------------------------------------
+model User {
+  id           String   @id @default(cuid())
+  // --- Acceso ---
+  username     String   @unique
+  passwordHash String
+  rol          String   @default("USUARIO") // ADMIN | SUPERVISOR | USUARIO
+
+  // --- Datos personales ---
+  nombre          String
+  apellidoPaterno String
+  apellidoMaterno String
+  curp            String  @unique
+  correo          String
+  telefono1       String
+  telefono2       String?
+
+  // --- Datos laborales ---
+  fechaContratacion DateTime
+  areaContratacion  String // departamento: oficinista, secretaria, bodeguero, vendedor, etc.
+
+  // --- Datos de salud / seguridad social ---
+  numeroSeguroSocial String
+  fechaAltaSalud     DateTime
+
+  // --- Domicilio ---
+  direccion   String
+  colonia     String
+  codigoPostal String
+  ciudad      String
+  estado      String
+
+  // --- Control ---
+  activo    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relaciones de auditoría de borrado
+  borradosSolicitados DeletionLog[] @relation("SolicitadoPor")
+  borradosAutorizados DeletionLog[] @relation("AutorizadoPor")
+
+  // Mensajes del chat enviados por este usuario
+  mensajes Message[]
+
+  // Nóminas y participación en proyectos
+  nominas   Nomina[]
+  proyectos ProjectMember[]
+
+  @@index([apellidoPaterno])
+  @@index([areaContratacion])
+}
+
+// ---------------------------------------------------------------------------
+// CLIENTES / PROVEEDORES (persona física o moral)
+// ---------------------------------------------------------------------------
+model Client {
+  id          String @id @default(cuid())
+  tipoPersona String // FISICA | MORAL
+  tipoRelacion String @default("CLIENTE") // CLIENTE | PROVEEDOR | AMBOS
+
+  // Identificación fiscal
+  rfc         String  @unique
+  razonSocial String // razón social (moral) o nombre completo (física)
+
+  // Datos de persona física (opcionales si es moral)
+  nombre          String?
+  apellidoPaterno String?
+  apellidoMaterno String?
+
+  // Contacto
+  correo    String
+  telefono1 String
+  telefono2 String?
+
+  // Domicilio fiscal
+  direccion    String
+  colonia      String
+  codigoPostal String
+  ciudad       String
+  estado       String
+
+  activo    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([razonSocial])
+  @@index([tipoRelacion])
+}
+
+// ---------------------------------------------------------------------------
+// AUDITORÍA DE ELIMINACIONES (requiere autorización de un supervisor)
+// ---------------------------------------------------------------------------
+model DeletionLog {
+  id           String   @id @default(cuid())
+  entidad      String // "User" o "Client"
+  entidadId    String // id del registro eliminado
+  descripcion  String // resumen legible de lo eliminado
+  motivo       String?
+
+  solicitadoPorId String
+  solicitadoPor   User   @relation("SolicitadoPor", fields: [solicitadoPorId], references: [id])
+
+  autorizadoPorId String
+  autorizadoPor   User   @relation("AutorizadoPor", fields: [autorizadoPorId], references: [id])
+
+  createdAt DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// CHAT DE EQUIPOS — canales y mensajes en tiempo real
+// ---------------------------------------------------------------------------
+model Channel {
+  id          String    @id @default(cuid())
+  nombre      String    @unique
+  descripcion String?
+  createdAt   DateTime  @default(now())
+  mensajes    Message[]
+}
+
+model Message {
+  id        String   @id @default(cuid())
+  contenido String
+
+  channelId String
+  channel   Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  autorId String
+  autor   User   @relation(fields: [autorId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([channelId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// NÓMINAS — recibo de nómina mensual con cálculo de ISR e IMSS/ISSSTE
+// ---------------------------------------------------------------------------
+model Nomina {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Periodo (nómina mensual)
+  anio Int
+  mes  Int // 1-12
+
+  tipoSeguridad String @default("IMSS") // IMSS | ISSSTE
+
+  // Percepciones (lo que se le paga)
+  sueldoBase        Float // sueldo mensual bruto
+  otrasPercepciones Float @default(0) // bonos, comisiones, etc.
+
+  // Deducciones (calculadas automáticamente)
+  isr              Float // impuesto sobre la renta (ya con subsidio aplicado)
+  seguridadSocial  Float // cuota obrera IMSS o ISSSTE
+  otrasDeducciones Float @default(0) // préstamos, etc.
+
+  // Totales
+  totalPercepciones Float
+  totalDeducciones  Float
+  neto              Float
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, anio, mes])
+}
+
+// ---------------------------------------------------------------------------
+// PROYECTOS — proyección, objetivos, metas, empleados y reportes
+// ---------------------------------------------------------------------------
+model Project {
+  id          String  @id @default(cuid())
+  nombre      String
+  proyeccion  String? // descripción / proyección del proyecto
+  objetivos   String?
+  metas       String?
+  estado      String  @default("PLANEACION") // PLANEACION | EN_PROGRESO | COMPLETADO | CANCELADO
+  presupuesto Float   @default(0)
+
+  fechaInicio DateTime?
+  fechaFin    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  miembros ProjectMember[]
+
+  @@index([estado])
+}
+
+model ProjectMember {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  rolProyecto String // rol del empleado dentro del proyecto
+  salario     Float  @default(0) // salario asignado en el proyecto
+
+  @@unique([projectId, userId])
+}
